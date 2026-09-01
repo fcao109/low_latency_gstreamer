@@ -1,0 +1,20 @@
+# Build output
+build/
+bld/
+
+# Raw video is enormous and regenerable with generate_raw_video.py
+# (10 s of 1080p60 I420 is ~1.8 GiB)
+*.yuv
+*.raw
+
+# Frame captures from debugging
+*.png
+
+__pycache__/
+*.pyc
+
+# Private keys and demo certificates from tools/make_certs.sh
+pki/
+*.key
+*.crt
+*.srl
