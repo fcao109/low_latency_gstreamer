@@ -937,7 +937,7 @@ int main(int argc, char *argv[]) {
     // Initialize defaults
     data.host = g_strdup("0.0.0.0");
     data.port = 9601;
-    data.codec = g_strdup("H265");
+    data.codec = g_strdup("H264");
     // Buffer depth in milliseconds. Together with jitter_mode below this decides
     // how much delay the receive path adds; measured at 0.2 ms of the ~9.5 ms
     // arrival-to-sink total, the rest being software decode. Raise it for a lossy
