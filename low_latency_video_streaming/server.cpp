@@ -961,7 +961,7 @@ static gboolean build_pipeline_orin(ServerData *data) {
 #endif
 
     // Link elements - source to tee
-    if (!gst_element_link_many(appsrc, nvvidconv, encoder, parse, rtp_pay, udpsink, NULL)) {
+    if (!gst_element_link_many(appsrc, nvvidconv, encoder, rtp_pay, udpsink, NULL)) {
         g_printerr("Failed to link source elements\n");
         return FALSE;
     }
@@ -1334,7 +1334,7 @@ int main(int argc, char *argv[]) {
     // Initialize defaults
     data.codec = g_strdup("h264");
     data.host = g_strdup("127.0.0.1");
-    // data.host = g_strdup("10.50.0.189");
+    // data.host = g_strdup("10.246.25.15");
     data.port = 9601;
     data.width = 1280;
     data.height = 1024;

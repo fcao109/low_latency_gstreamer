@@ -120,10 +120,10 @@ static gboolean rtp_timestamp_of(GstBuffer *buffer, guint32 *timestamp) {
 // "nvh264dec"/"nvh265dec", and 1.24+ adds the "nvautogpu*" variants.
 static const gchar* detect_nvidia_decoder(const gchar *codec) {
     const gchar *h264_decoders[] = {
-        "nvh264dec", "nvautogpuh264dec", "nvdec", NULL
+        "nvh264dec", "nvautogpuh264dec", "nvdec", "nvv4l2decoder", NULL
     };
     const gchar *h265_decoders[] = {
-        "nvh265dec", "nvautogpuh265dec", "nvdec", NULL
+        "nvh265dec", "nvautogpuh265dec", "nvdec", "nvv4l2decoder", NULL
     };
     const gchar **candidates = g_strcmp0(codec, "H264") == 0
         ? h264_decoders : h265_decoders;
@@ -173,6 +173,7 @@ static gboolean src_pad_has_feature(GstElement *element, const gchar *feature) {
     return found;
 }
 
+#if 1
 static gboolean build_pipeline(ClientData *data) {
     // Create pipeline programmatically
     data->pipeline = gst_pipeline_new("video-receiving-pipeline");
@@ -207,6 +208,7 @@ static gboolean build_pipeline(ClientData *data) {
     GstElement *decodebin = NULL;
     GstElement *videoconvert = gst_element_factory_make("videoconvert", "videoconvert");
     GstElement *autovideosink = gst_element_factory_make("autovideosink", "autovideosink");
+    GstElement *nvvidconv = gst_element_factory_make("nvvidconv", "nvvidconv");
 
     if (!udpsrc || !capsfilter || !videoconvert || !autovideosink || !jitterbuffer) {
         g_printerr("Failed to create elements\n");
@@ -228,6 +230,7 @@ static gboolean build_pipeline(ClientData *data) {
     }
     g_print("Jitterbuffer: %d ms, mode=%s\n", data->latency, data->jitter_mode);
 
+#if 0
     // Hardware decoding is opt-in via --hw-decode. On this machine nvdec decodes
     // into GL textures that come back blank, so every frame renders as a flat
     // colour; software decoding is verified pixel-accurate. Correctness wins by
@@ -285,6 +288,9 @@ static gboolean build_pipeline(ClientData *data) {
             }
         }
     }
+#else
+    decoder = gst_element_factory_make("nvv4l2decoder", "decoder");
+#endif
 
     // Create depayloader and parser based on codec
     if (g_strcmp0(data->codec, "H264") == 0) {
@@ -320,6 +326,7 @@ static gboolean build_pipeline(ClientData *data) {
     g_object_set(udpsrc, "address", data->host, "port", data->port,
                  "buffer-size", buffer_size, NULL);
 
+#if 0
     // Set caps filter for RTP. Under SRTP the media description is the same; only
     // the container name changes, and srtpdec hands on plain application/x-rtp.
     GstCaps *caps = gst_caps_new_simple(
@@ -331,6 +338,18 @@ static gboolean build_pipeline(ClientData *data) {
         NULL);
     g_object_set(capsfilter, "caps", caps, NULL);
     gst_caps_unref(caps);
+#else
+    GstCaps *caps = gst_caps_new_simple(
+        data->srtp_video.enabled ? "application/x-srtp" : "application/x-rtp",
+        "media", G_TYPE_STRING, "video",
+        "clock-rate", G_TYPE_INT, 90000,
+        "payload", G_TYPE_INT, 96,
+        "encoding-name", G_TYPE_STRING, data->codec,
+        NULL);
+
+    g_object_set(udpsrc, "caps", caps, NULL);
+    gst_caps_unref(caps);
+#endif
 
     if (data->srtp_video.enabled) {
         srtpdec = mp_srtp_make_receiver(GST_BIN(data->pipeline), &data->srtp_video,
@@ -351,6 +370,7 @@ static gboolean build_pipeline(ClientData *data) {
 
     // Add all elements to pipeline
     if (decoder) {
+        g_printerr("~~~~~~~~%d\n", __LINE__);
         // Assemble the chain in order, skipping the optional stages that this
         // GStreamer version does not need, then add and link it in one pass.
         // srtpdec is left out of this list: its pads are named rtp_sink/rtp_src
@@ -358,7 +378,7 @@ static gboolean build_pipeline(ClientData *data) {
         GstElement *chain[12];
         gint n = 0;
         chain[n++] = udpsrc;
-        chain[n++] = capsfilter;
+        // chain[n++] = capsfilter;
         chain[n++] = jitterbuffer;
         chain[n++] = depay;
         chain[n++] = parse;
@@ -366,7 +386,8 @@ static gboolean build_pipeline(ClientData *data) {
         if (glcolorconvert) chain[n++] = glcolorconvert;
         if (gldownload)     chain[n++] = gldownload;
         if (cudadownload)   chain[n++] = cudadownload;
-        chain[n++] = videoconvert;
+        // chain[n++] = videoconvert;
+        chain[n++] = nvvidconv;
         chain[n++] = autovideosink;
 
         for (gint i = 0; i < n; i++) {
@@ -397,6 +418,7 @@ static gboolean build_pipeline(ClientData *data) {
     }
 
     if (!decoder) {
+        g_printerr("~~~~~~~~%d\n", __LINE__);
         if (srtpdec) {
             if (!gst_element_link(udpsrc, capsfilter) ||
                 !gst_element_link_pads(capsfilter, "src", srtpdec, "rtp_sink") ||
@@ -422,6 +444,98 @@ static gboolean build_pipeline(ClientData *data) {
 
     return TRUE;
 }
+#else   // feng
+static gboolean build_pipeline_orin(ClientData *data) {
+    // Create pipeline programmatically
+    data->pipeline = gst_pipeline_new("video-receiving-pipeline");
+    if (!data->pipeline) {
+        g_printerr("Failed to create pipeline\n");
+        return FALSE;
+    }
+
+    // Create elements
+    GstElement *udpsrc = gst_element_factory_make("udpsrc", "source");
+    GstElement *jitterbuffer = gst_element_factory_make("rtpjitterbuffer", "jitterbuffer");
+    GstElement *depay = gst_element_factory_make("rtph264depay", "depay");
+    GstElement *parse = gst_element_factory_make("h264parse", "parse");
+    GstElement *decoder = gst_element_factory_make("nvv4l2decoder", "decoder");
+    GstElement *converter = gst_element_factory_make("nvvidconv", "converter");
+    GstElement *sink = gst_element_factory_make("xvimagesink", "sink");
+
+    if (!udpsrc || !jitterbuffer || !depay || !parse ||
+        !decoder || !converter || !sink)
+    {
+        g_printerr("Failed to create GStreamer elements\n");
+        return -1;
+    }
+
+    // udpsrc port=5000
+    g_object_set(udpsrc, "port", 9601, nullptr);
+
+    // application/x-rtp,
+    //     media=video,
+    //     clock-rate=90000,
+    //     encoding-name=H264
+    GstCaps *caps = gst_caps_new_simple(
+        "application/x-rtp",
+        "media", G_TYPE_STRING, "video",
+        "clock-rate", G_TYPE_INT, 90000,
+        "payload", G_TYPE_INT, 96,
+        "encoding-name", G_TYPE_STRING, "H264",
+        nullptr);
+
+    g_object_set(udpsrc, "caps", caps, nullptr);
+    gst_caps_unref(caps);
+
+    // Keep the buffer as short as the user asked for; it bounds added latency.
+    g_object_set(jitterbuffer, "latency", (guint)data->latency, NULL);
+    // Emit packet-lost events so the decoder is told about gaps instead of
+    // silently decoding damaged references.
+    set_bool_prop(jitterbuffer, "do-lost", TRUE);
+    // GStreamer's default mode slaves the receiver to an estimate of the sender's
+    // clock and schedules every packet against it, which was measured holding
+    // frames ~22 ms even with a 5 ms depth. "none" forwards as soon as possible so
+    // the configured depth is the only delay added, at the cost of the smoothing
+    // that a jittery or reordering network needs.
+    if (g_object_class_find_property(G_OBJECT_GET_CLASS(jitterbuffer), "mode")) {
+        gst_util_set_object_arg(G_OBJECT(jitterbuffer), "mode", data->jitter_mode);
+    }
+    g_print("Jitterbuffer: %d ms, mode=%s\n", data->latency, data->jitter_mode);
+
+    // Add all elements to the pipeline
+    gst_bin_add_many(
+        GST_BIN(data->pipeline),
+        udpsrc,
+        jitterbuffer,
+        depay,
+        parse,
+        decoder,
+        converter,
+        sink,
+        nullptr);
+
+    // Link:
+    // udpsrc -> rtph264depay -> h264parse -> nvv4l2decoder
+    //         -> nvvidconv -> xvimagesink
+    if (!gst_element_link_many(
+            udpsrc,
+            jitterbuffer,
+            depay,
+            parse,
+            decoder,
+            converter,
+            sink,
+            nullptr))
+    {
+        g_printerr("Failed to link GStreamer elements\n");
+        return FALSE;
+    }
+
+    g_print("Pipeline built\n");
+
+    return TRUE;
+}
+#endif
 
 // Note when each frame's first packet reached the socket.
 static GstPadProbeReturn arrival_probe(GstPad *pad, GstPadProbeInfo *info,
@@ -806,6 +920,7 @@ static void run_client(ClientData *data) {
         return;
     }
 
+    // if (!build_pipeline_orin(data)) {
     if (!build_pipeline(data)) {
         return;
     }
