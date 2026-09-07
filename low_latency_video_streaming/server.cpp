@@ -801,6 +801,12 @@ static gboolean build_pipeline_orin(ServerData *data) {
             g_print("Configured VAAPI encoder: %s\n", gpu_encoder);
             using_gpu_encoder = TRUE;
         }
+
+        if (g_str_has_prefix(gpu_encoder, "nvv4l2")) {
+            g_print("Configured nvv4l2 encoder: %s\n", gpu_encoder);
+            g_object_set(G_OBJECT(encoder), "maxperf-enable", TRUE, NULL);
+            g_object_set(G_OBJECT(encoder), "poc-type", 2, NULL);
+        }
     }
 
     if (!encoder) {
@@ -1332,9 +1338,9 @@ int main(int argc, char *argv[]) {
     memset(&data, 0, sizeof(data));
 
     // Initialize defaults
-    data.codec = g_strdup("h264");
-    data.host = g_strdup("127.0.0.1");
-    // data.host = g_strdup("10.246.25.15");
+    data.codec = g_strdup("h265");
+    // data.host = g_strdup("127.0.0.1");
+    data.host = g_strdup("10.246.20.129");
     data.port = 9601;
     data.width = 1280;
     data.height = 1024;
