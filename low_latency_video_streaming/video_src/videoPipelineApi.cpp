@@ -15,6 +15,8 @@ VideoPipeline vSrc = VideoPipeline();
 std::shared_ptr<std::thread> runThd = nullptr;
 std::shared_ptr<std::thread> renderThd = nullptr;
 
+extern void *yuan_serverData;
+
 void runStart() {
 
 	if (vSrc.isSrcRunning()) {
@@ -166,6 +168,7 @@ bool OpenLiveCaptureSources(int setWidth, int setHeight, const char* camera1, co
     return true;
 }
 
+#if 0
 int runVideoPipeline(void *data) {
     VideoParameters params = VideoParameters();
     if (!(OpenLiveCaptureSources(params.captureWidth,
@@ -193,3 +196,15 @@ int runVideoPipeline(void *data) {
 
     return 0;
 }
+#else
+int runVideoPipeline(void *data) {
+    VideoParameters params = VideoParameters();
+
+    yuan_serverData = data;
+
+    runThd = std::make_shared<std::thread>(&yuan_main);
+    usleep(1000000);
+
+    return 0;
+}
+#endif

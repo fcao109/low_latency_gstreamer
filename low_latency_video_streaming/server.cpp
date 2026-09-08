@@ -874,6 +874,9 @@ static gboolean build_pipeline_orin(ServerData *data) {
     }
     data->appsrc = appsrc;
 
+    data->width = 1920;
+    data->height = 1080;
+
     printf("%s %d: Resolution: %dx%d\n",__func__,__LINE__, data->width, data->height);
 
     // Describe exactly what the pacing loop will push. The loop stamps every
@@ -1341,7 +1344,7 @@ int main(int argc, char *argv[]) {
     // Initialize defaults
     data.codec = g_strdup("h265");
     // data.host = g_strdup("127.0.0.1");
-    data.host = g_strdup("10.246.20.129");
+    data.host = g_strdup("10.50.0.189");
     data.port = 9601;
     data.width = 1280;
     data.height = 1024;

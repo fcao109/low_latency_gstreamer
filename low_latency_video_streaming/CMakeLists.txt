@@ -27,6 +27,7 @@ include_directories(
     ${Magwell_SDK_DIR}/Include
     ${VIDEO_SRC_DIR}
     ${OpenCV_INCLUDE_DIRS}
+    ${VIDEO_SRC_DIR}/include
 )
 
 # Link directories
@@ -34,6 +35,7 @@ link_directories(
     ${GSTREAMER_LIBRARY_DIRS}
     ${GST_PLUGINS_BASE_LIBRARY_DIRS}
     ${GIO_LIBRARY_DIRS}
+    ${VIDEO_SRC_DIR}/lib
 )
 
 # Add compiler flags
@@ -46,6 +48,7 @@ add_executable(server
                ${VIDEO_SRC_DIR}/videoCapture.cpp
                ${VIDEO_SRC_DIR}/videoPipeline.cpp
                ${VIDEO_SRC_DIR}/videoPipelineApi.cpp
+               ${VIDEO_SRC_DIR}/raw_buffer_nv12.cpp
 )
 target_link_libraries(server
     ${GSTREAMER_LIBRARIES}
@@ -54,6 +57,7 @@ target_link_libraries(server
     ${Magwell_SDK_LIB}
     ${OpenCV_LIBRARIES}
     pthread udev asound v4l2
+    qcap
 )
 
 # Client executable

@@ -36,3 +36,5 @@ bool OpenLiveCaptureSources(int setWidth,
 							int fps);
 
 int runVideoPipeline(void *data);
+
+void yuan_main();
