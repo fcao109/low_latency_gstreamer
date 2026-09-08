@@ -402,7 +402,6 @@ static gpointer pacer_thread_func(gpointer user_data) {
 
     while (g_atomic_int_get(&data->running)) {
         if (data->capture_frame_cnt != frame_index) {
-            gst_element_set_state(data->pipeline, GST_STATE_PLAYING);
             // printf("%s %d: %ld %ld\n",__func__,__LINE__, data->capture_frame_cnt, frame_index);
             unsigned char* rawbuff = data->frameQueue->pop();
 
@@ -963,10 +962,12 @@ static gboolean build_pipeline_orin(ServerData *data) {
 #endif
                      queue_encode, encoder, rtp_pay, udpsink, NULL);
 #else
-    gst_bin_add_many(GST_BIN(data->pipeline), appsrc, nvvidconv, encoder, parse, rtp_pay, udpsink, NULL);
+    // gst_bin_add_many(GST_BIN(data->pipeline), appsrc, nvvidconv, encoder, parse, rtp_pay, udpsink, NULL);
+    gst_bin_add_many(GST_BIN(data->pipeline), appsrc, nvvidconv, encoder, rtp_pay, udpsink, NULL);
 #endif
 
     // Link elements - source to tee
+    // if (!gst_element_link_many(appsrc, nvvidconv, encoder, parse, rtp_pay, udpsink, NULL)) {
     if (!gst_element_link_many(appsrc, nvvidconv, encoder, rtp_pay, udpsink, NULL)) {
         g_printerr("Failed to link source elements\n");
         return FALSE;

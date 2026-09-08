@@ -290,6 +290,9 @@ static gboolean build_pipeline(ClientData *data) {
     }
 #else
     decoder = gst_element_factory_make("nvv4l2decoder", "decoder");
+    g_print("Configured nvv4l2 decoder: %s\n", "nvv4l2decoder");
+    g_object_set(G_OBJECT(decoder), "disable-dpb", TRUE, NULL);
+    g_object_set(G_OBJECT(decoder), "enable-max-performance", TRUE, NULL);
 #endif
 
     // Create depayloader and parser based on codec
@@ -1052,7 +1055,7 @@ int main(int argc, char *argv[]) {
     // Initialize defaults
     data.host = g_strdup("0.0.0.0");
     data.port = 9601;
-    data.codec = g_strdup("H264");
+    data.codec = g_strdup("H265");
     // Buffer depth in milliseconds. Together with jitter_mode below this decides
     // how much delay the receive path adds; measured at 0.2 ms of the ~9.5 ms
     // arrival-to-sink total, the rest being software decode. Raise it for a lossy

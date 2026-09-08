@@ -290,7 +290,6 @@ void VideoPipeline::runSrc() {
         frameCnt++;
         // logMessage("frameCnt=" + std::to_string(frameCnt));
         ((ServerData *)serverData)->capture_frame_cnt = frameCnt;
-
         ((ServerData *)serverData)->frameQueue->push(resizedCanvas);
 
 #ifdef LOCAL_RENDERING
