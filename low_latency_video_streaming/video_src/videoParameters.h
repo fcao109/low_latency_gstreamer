@@ -3,8 +3,8 @@
 #include <string>
 
 struct VideoParameters {
-    std::string cameraLeftName = "00-00 Pro Capture Dual HDMI (PCI:0000:88:00.0)";
-	std::string cameraRightName = "00-01 Pro Capture Dual HDMI (PCI:0000:8a:00.0)";
+    std::string cameraLeftName = "00-00 Pro Capture Dual HDMI (PCI:0005:03:00.0)";
+	std::string cameraRightName = "00-01 Pro Capture Dual HDMI (PCI:0005:05:00.0)";
 	std::string rtaIpAddr = "127.0.0.1";
     std::string codec = "h264";
     std::string h264Preset = "p2";

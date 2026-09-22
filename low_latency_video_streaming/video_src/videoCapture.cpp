@@ -1,6 +1,6 @@
 #include "videoCapture.h"
 
-#define NUM_PARTIAL_LINE 64
+#define NUM_PARTIAL_LINE 0
 
 // sem_t VideoCapture::g_Sem;  // Definition of the static variable
 int VideoCapture::thread_count = 0;

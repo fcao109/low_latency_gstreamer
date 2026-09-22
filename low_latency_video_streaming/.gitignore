@@ -18,3 +18,5 @@ pki/
 *.key
 *.crt
 *.srl
+
+*.vscode

@@ -952,6 +952,7 @@ int main(int argc, char *argv[]) {
     data.audio_back_port = 5004;
     data.key_port = 5010;
     data.pki = mp_pki_new();
+    data.hw_decode = TRUE;
     // 660 Hz against the sender's 440 Hz, so the two directions are audibly
     // distinct on one desk.
     mp_audio_config_defaults(&data.audio, 660);

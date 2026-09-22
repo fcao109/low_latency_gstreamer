@@ -15,7 +15,7 @@ pkg_check_modules(GIO REQUIRED gio-2.0)
 find_package(OpenCV REQUIRED)
 
 set(Magwell_SDK_DIR ${CMAKE_SOURCE_DIR}/third-party/Magewell_SDK)
-set(Magwell_SDK_LIB ${Magwell_SDK_DIR}/Lib/x64/libMWCapture.a)
+set(Magwell_SDK_LIB ${Magwell_SDK_DIR}/Lib/arm64/libMWCapture.a)
 set(VIDEO_SRC_DIR ${CMAKE_SOURCE_DIR}/video_src)
 
 # Include directories
