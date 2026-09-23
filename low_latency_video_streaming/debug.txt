@@ -1,0 +1,52 @@
+enP2p1s0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet 10.0.0.112  netmask 255.255.255.0  broadcast 10.0.0.255
+        ether 74:25:54:9b:dd:b7  txqueuelen 1000  (Ethernet)
+        RX packets 7107431  bytes 3527217774 (3.5 GB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 51059  bytes 16503499 (16.5 MB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+        device interrupt 57  
+
+enx9c69d3c1f949: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet 10.50.0.117  netmask 255.255.255.0  broadcast 10.50.0.255
+        inet6 fe80::9cc3:a1c8:14aa:977b  prefixlen 64  scopeid 0x20<link>
+        ether 9c:69:d3:c1:f9:49  txqueuelen 1000  (Ethernet)
+        RX packets 0  bytes 0 (0.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 0  bytes 0 (0.0 B)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+
+--------
+
+gst-launch-1.0 udpsrc address=0.0.0.0 port=9601 buffer-size=524288 caps="application/x-rtp,media=video,encoding-name=H265" ! \
+rtpjitterbuffer latency=50 drop-on-latency=true mode=none ! \
+rtph265depay ! h265parse ! nvh265dec ! autovideosink sync=false
+
+--------
+
+gst-launch-1.0 -v udpsrc address=0.0.0.0 port=9601 buffer-size=524288 \
+  caps="application/x-rtp, media=video, encoding-name=H265, payload=96" ! \
+  rtpjitterbuffer latency=60 ! \
+  rtph265depay ! \
+  h265parse ! \
+  nvh265dec ! \
+  videoconvert ! \
+  autovideosink
+
+
+Receiving 23.3 fps | arrival->sink 13.2 ms (max 16.4) = jitterbuf 2.6 + parse 0.1 + decode 4.0 + convert 6.5
+Receiving 59.9 fps | arrival->sink 14.3 ms (max 16.8) = jitterbuf 3.6 + parse 0.1 + decode 4.0 + convert 6.6
+Receiving 59.9 fps | arrival->sink 13.9 ms (max 14.7) = jitterbuf 3.0 + parse 0.1 + decode 4.2 + convert 6.7
+Receiving 60.0 fps | arrival->sink 13.4 ms (max 18.6) = jitterbuf 2.3 + parse 0.1 + decode 4.3 + convert 6.7
+Receiving 59.9 fps | arrival->sink 13.7 ms (max 20.3) = jitterbuf 2.7 + parse 0.1 + decode 4.3 + convert 6.7
+Receiving 60.9 fps | arrival->sink 13.3 ms (max 20.1) = jitterbuf 2.2 + parse 0.1 + decode 4.3 + convert 6.7
+Receiving 59.9 fps | arrival->sink 12.1 ms (max 18.4) = jitterbuf 1.0 + parse 0.1 + decode 4.3 + convert 6.6
+Receiving 59.9 fps | arrival->sink 12.7 ms (max 21.2) = jitterbuf 1.6 + parse 0.1 + decode 4.4 + convert 6.7
+Receiving 58.9 fps | arrival->sink 12.0 ms (max 15.8) = jitterbuf 0.2 + parse 0.2 + decode 5.0 + convert 6.6
+Receiving 60.9 fps | arrival->sink 12.0 ms (max 14.4) = jitterbuf 0.0 + parse 0.2 + decode 5.1 + convert 6.7
+Receiving 59.9 fps | arrival->sink 11.7 ms (max 14.3) = jitterbuf 0.1 + parse 0.1 + decode 4.8 + convert 6.6
+Receiving 59.9 fps | arrival->sink 12.0 ms (max 13.9) = jitterbuf 0.0 + parse 0.2 + decode 5.2 + convert 6.6
+Receiving 59.9 fps | arrival->sink 11.9 ms (max 16.1) = jitterbuf 0.2 + parse 0.2 + decode 4.8 + convert 6.8
+Receiving 59.9 fps | arrival->sink 11.6 ms (max 15.1) = jitterbuf 0.0 + parse 0.2 + decode 4.8 + convert 6.7
+Receiving 59.9 fps | arrival->sink 11.3 ms (max 14.1) = jitterbuf 0.0 + parse 0.1 + decode 4.4 + convert 6.7
