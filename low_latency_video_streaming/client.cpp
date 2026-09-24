@@ -17,6 +17,7 @@
 // exactly as before, and nothing blocks waiting for a channel.
 
 #include <gst/gst.h>
+#include <gst/app/gstappsink.h>
 #include <glib.h>
 #include <glib-unix.h>
 #include <glib/gprintf.h>
@@ -173,6 +174,32 @@ static gboolean src_pad_has_feature(GstElement *element, const gchar *feature) {
     return found;
 }
 
+static GstFlowReturn on_new_sample(GstAppSink *appsink, gpointer user_data) {
+    GstSample *sample = gst_app_sink_pull_sample(appsink);
+    if (!sample) {
+        return GST_FLOW_ERROR;
+    }
+
+    GstBuffer *buffer = gst_sample_get_buffer(sample);
+    GstCaps *caps = gst_sample_get_caps(sample);
+    GstStructure *structure = gst_caps_get_structure(caps, 0);
+
+    int width = 0, height = 0;
+    gst_structure_get_int(structure, "width", &width);
+    gst_structure_get_int(structure, "height", &height);
+    g_print("got sample: width %d , height %d\n", width, height);
+
+    GstMapInfo map;
+    if (gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+        g_print("got sample: data size %d bytes\n", map.size);
+        gst_buffer_unmap(buffer, &map);
+    }
+
+    gst_sample_unref(sample);
+
+    return GST_FLOW_OK;
+}
+
 static gboolean build_pipeline(ClientData *data) {
     // Create pipeline programmatically
     data->pipeline = gst_pipeline_new("video-receiving-pipeline");
@@ -207,17 +234,22 @@ static gboolean build_pipeline(ClientData *data) {
     GstElement *decodebin = NULL;
     GstElement *videoconvert = gst_element_factory_make("videoconvert", "videoconvert");
     GstElement *autovideosink = gst_element_factory_make("autovideosink", "autovideosink");
+    GstElement *appsink = gst_element_factory_make("appsink", "appsink");
 
-    if (!udpsrc || !capsfilter || !videoconvert || !autovideosink || !jitterbuffer) {
+    if (!udpsrc || !capsfilter || !videoconvert || !autovideosink || !jitterbuffer || !appsink) {
         g_printerr("Failed to create elements\n");
         return FALSE;
     }
+
+    g_object_set(appsink, "emit-signals", TRUE, "sync", TRUE, NULL);
+    g_signal_connect(appsink, "new-sample", G_CALLBACK(on_new_sample), nullptr);
 
     // Keep the buffer as short as the user asked for; it bounds added latency.
     g_object_set(jitterbuffer, "latency", (guint)data->latency, NULL);
     // Emit packet-lost events so the decoder is told about gaps instead of
     // silently decoding damaged references.
     set_bool_prop(jitterbuffer, "do-lost", TRUE);
+    set_bool_prop(jitterbuffer, "drop-on-latency", TRUE);   // feng
     // GStreamer's default mode slaves the receiver to an estimate of the sender's
     // clock and schedules every packet against it, which was measured holding
     // frames ~22 ms even with a 5 ms depth. "none" forwards as soon as possible so
@@ -363,11 +395,14 @@ static gboolean build_pipeline(ClientData *data) {
         chain[n++] = depay;
         chain[n++] = parse;
         chain[n++] = decoder;
+#if 0
         if (glcolorconvert) chain[n++] = glcolorconvert;
         if (gldownload)     chain[n++] = gldownload;
         if (cudadownload)   chain[n++] = cudadownload;
+#endif
         chain[n++] = videoconvert;
-        chain[n++] = autovideosink;
+        // chain[n++] = autovideosink;
+        chain[n++] = appsink;
 
         for (gint i = 0; i < n; i++) {
             gst_bin_add(GST_BIN(data->pipeline), chain[i]);
@@ -946,7 +981,7 @@ int main(int argc, char *argv[]) {
     // See build_pipeline(): the adaptive modes add roughly a frame of scheduling
     // delay. Switch to "slave" or "buffer" on a link that actually needs smoothing.
     data.jitter_mode = g_strdup("none");
-    data.buffer_size = 524288;
+    data.buffer_size = 1048576;     // feng - old value 524288
     data.peer_host = g_strdup("127.0.0.1");
     data.audio_port = 5002;
     data.audio_back_port = 5004;
