@@ -902,6 +902,18 @@ static void run_client(ClientData *data) {
     mp_srtp_key_clear(&data->srtp_audio_up);
 }
 
+static void mp_pki_enable(ClientData &data) {
+    if (!mp_pki_is_configured(data.pki)) {
+        if (g_file_test("../pki/ca.crt", G_FILE_TEST_IS_REGULAR) &&
+            g_file_test("../pki/receiver.crt", G_FILE_TEST_IS_REGULAR) &&
+            g_file_test("../pki/receiver.key", G_FILE_TEST_IS_REGULAR)) {
+            data.pki->ca_file = g_strdup("../pki/ca.crt");
+            data.pki->cert_file = g_strdup("../pki/receiver.crt");
+            data.pki->key_file = g_strdup("../pki/receiver.key");
+        }
+    }
+}
+
 static void print_usage(const gchar *program, FILE *stream) {
     g_fprintf(stream, "Usage: %s [options]\n", program);
     g_fprintf(stream, "\nReceives RTP/UDP video and exchanges audio both ways.\n\n");
@@ -992,6 +1004,8 @@ int main(int argc, char *argv[]) {
             data.audio_back_port = atoi(argv[++i]);
         } else if (g_strcmp0(argv[i], "--key-port") == 0 && i + 1 < argc) {
             data.key_port = atoi(argv[++i]);
+        } else if (g_strcmp0(argv[i], "--encrypt") == 0) {
+            mp_pki_enable(data);
         } else if (g_strcmp0(argv[i], "--help") == 0 || g_strcmp0(argv[i], "-h") == 0) {
             print_usage(argv[0], stdout);
             return 0;
