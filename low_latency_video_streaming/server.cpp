@@ -885,9 +885,6 @@ static void run_server(ServerData *data) {
     gboolean audio_send = (data->audio.codec != MP_AUDIO_OFF && data->audio.send &&
                            g_strcmp0(data->audio.source, "none") != 0);
     gboolean audio_recv = (data->audio.codec != MP_AUDIO_OFF && data->audio.receive);
-#if 1   // feng
-    audio_send = audio_recv = false;
-#endif
 
     mp_srtp_key_init(&data->srtp_video, "video", encrypt);
     mp_srtp_key_init(&data->srtp_audio_down, "audio-down", encrypt);

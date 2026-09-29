@@ -28,6 +28,11 @@
 #include <glib/gprintf.h>
 #include <stdio.h>
 #include <string.h>
+#include <iostream>
+#include <string>
+#include <vector>
+#include <array>
+#include <regex>
 
 #include "media_pki.h"
 #include "media_props.h"
@@ -45,6 +50,12 @@ typedef enum {
     MP_AUDIO_RAW,
     MP_AUDIO_OPUS
 } MpAudioCodec;
+
+// Struct to store the hardware ID and description
+struct AudioDevice {
+    std::string hw_id;       // e.g., "hw:1,0"
+    std::string description; // e.g., "USB Audio Device"
+};
 
 typedef struct {
     MpAudioCodec codec;
@@ -65,6 +76,7 @@ typedef struct {
     gint tone_hz;            // test source frequency
 
     gchar *sink;             // auto | fakesink | an element name
+    gchar *sink_device;      // playback device, NULL for the default
     gint sink_buffer_ms;
 
     gint jb_latency_ms;
@@ -76,6 +88,75 @@ typedef struct {
     // flowing in both directions and how much delay it is carrying.
     gboolean stats;
 } MpAudioConfig;
+
+// Function to execute a system command and return the output as a string
+static std::string execCommand(const char* cmd) {
+    std::array<char, 128> buffer;
+    std::string result;
+    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd, "r"), pclose);
+    if (!pipe) {
+        throw std::runtime_error("popen() failed!");
+    }
+    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+        result += buffer.data();
+    }
+    return result;
+}
+
+static std::vector<AudioDevice> getUsbAudioDevices() {
+    std::vector<AudioDevice> devices;
+
+    try {
+        // Run aplay -l to list digital audio playback devices
+        std::string aplayOutput = execCommand("aplay -l");
+
+        // Regex to parse card number, device number, and the device name
+        // Example line: card 1: Audio [USB Audio], device 0: USB Audio [USB Audio]
+        std::regex device_regex(R"(card\s+(\d+):.*\[(.*USB.*)\],.*device\s+(\d+):)");
+
+        std::stringstream ss(aplayOutput);
+        std::string line;
+
+        while (std::getline(ss, line)) {
+            std::smatch match;
+            if (std::regex_search(line, match, device_regex)) {
+                std::string card_num = match[1].str();
+                std::string device_name = match[2].str();
+                std::string device_num = match[3].str();
+
+                AudioDevice dev;
+                dev.hw_id = "hw:" + card_num + "," + device_num;
+                dev.description = device_name;
+
+                devices.push_back(dev);
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+    }
+
+    return devices;
+}
+
+static void searchUsbAudioDevices(MpAudioConfig *cfg) {
+    std::cout << "Searching for USB speakers and earphones via aplay...\n";
+    std::vector<AudioDevice> usbAudioDevices = getUsbAudioDevices();
+    if (usbAudioDevices.empty()) {
+        std::cout << "No USB audio playback devices found.\n";
+    } else {
+        std::cout << "Found " << usbAudioDevices.size() << " USB audio device(s):\n";
+        for (const auto& dev : usbAudioDevices) {
+            std::cout << "----------------------------------------\n";
+            std::cout << "Device: " << dev.description << "\n";
+            std::cout << "HW ID : " << dev.hw_id << "\n";
+        }
+        std::cout << "----------------------------------------\n";
+
+        cfg->source = g_strdup("device");
+        cfg->device = g_strdup(usbAudioDevices[0].hw_id.c_str());
+        cfg->sink_device = g_strdup(usbAudioDevices[0].hw_id.c_str());
+    }
+}
 
 static void mp_audio_config_defaults(MpAudioConfig *cfg, gint tone_hz) {
     memset(cfg, 0, sizeof(*cfg));
@@ -90,6 +171,7 @@ static void mp_audio_config_defaults(MpAudioConfig *cfg, gint tone_hz) {
     cfg->device = NULL;
     cfg->tone_hz = tone_hz;
     cfg->sink = g_strdup("auto");
+    cfg->sink_device = NULL;
     // Enough to ride out scheduling jitter on the playback thread without
     // dominating the latency figure. Lower it if the host can take it.
     cfg->sink_buffer_ms = 30;
@@ -97,12 +179,15 @@ static void mp_audio_config_defaults(MpAudioConfig *cfg, gint tone_hz) {
     // the adaptive scheduler adding a packet on top of it.
     cfg->jb_latency_ms = 5;
     cfg->jitter_mode = g_strdup("none");
+    searchUsbAudioDevices(cfg);
+    cfg->invalid = false;
 }
 
 static void mp_audio_config_clear(MpAudioConfig *cfg) {
     g_free(cfg->source);
     g_free(cfg->device);
     g_free(cfg->sink);
+    g_free(cfg->sink_device);
     g_free(cfg->jitter_mode);
 }
 
@@ -203,6 +288,11 @@ static gboolean mp_audio_parse_arg(MpAudioConfig *cfg, int argc, char **argv, in
         cfg->sink = g_strdup(argv[++(*i)]);
         return TRUE;
     }
+    if (g_strcmp0(arg, "--audio-sink-device") == 0 && has_value) {
+        g_free(cfg->sink_device);
+        cfg->sink_device = g_strdup(argv[++(*i)]);
+        return TRUE;
+    }
     if (g_strcmp0(arg, "--audio-sink-buffer-ms") == 0 && has_value) {
         cfg->sink_buffer_ms = atoi(argv[++(*i)]);
         return TRUE;
@@ -237,6 +327,8 @@ static void mp_audio_print_usage(FILE *stream) {
     g_fprintf(stream, "  --audio-tone <hz>           Test tone frequency\n");
     g_fprintf(stream, "  --audio-sink <element>      Playback sink, or fakesink "
                       "(default: auto)\n");
+    g_fprintf(stream, "  --audio-sink-device <name>  Playback device "
+                      "(e.g. hw:4,0 for a USB headset)\n");
     g_fprintf(stream, "  --audio-rate <hz>           Sample rate (default: 48000)\n");
     g_fprintf(stream, "  --audio-channels <n>        Channels (default: 2)\n");
     g_fprintf(stream, "  --audio-frame-ms <ms>       Packet duration "
@@ -599,7 +691,14 @@ typedef struct {
 
 static GstElement* mp_audio_make_source(const MpAudioConfig *cfg) {
     if (g_strcmp0(cfg->source, "device") == 0) {
-        const gchar *const candidates[] = {"pulsesrc", "alsasrc", "autoaudiosrc", NULL};
+        // An ALSA hardware name (hw:X,Y or plughw:X,Y) is not understood by
+        // PulseAudio, so go straight to alsasrc when one is given.
+        gboolean alsa_device = cfg->device &&
+            (g_str_has_prefix(cfg->device, "hw:") ||
+             g_str_has_prefix(cfg->device, "plughw:"));
+        const gchar *const candidates_pulse[] = {"pulsesrc", "alsasrc", "autoaudiosrc", NULL};
+        const gchar *const candidates_alsa[]  = {"alsasrc", "autoaudiosrc", NULL};
+        const gchar *const *candidates = alsa_device ? candidates_alsa : candidates_pulse;
         const gchar *chosen = NULL;
         GstElement *source = mp_make_first(candidates, "audiosrc", &chosen);
         if (!source) {
@@ -807,7 +906,13 @@ static GstElement* mp_audio_make_sink(const MpAudioConfig *cfg) {
         // Named explicitly rather than through autoaudiosink, which does not
         // proxy buffer-time - the property that decides how much of the latency
         // budget the playback device takes.
-        const gchar *const candidates[] = {"pulsesink", "alsasink", "autoaudiosink", NULL};
+        // An ALSA hardware name is not understood by PulseAudio, so skip it.
+        gboolean alsa_device = cfg->sink_device &&
+            (g_str_has_prefix(cfg->sink_device, "hw:") ||
+             g_str_has_prefix(cfg->sink_device, "plughw:"));
+        const gchar *const candidates_pulse[] = {"pulsesink", "alsasink", "autoaudiosink", NULL};
+        const gchar *const candidates_alsa[]  = {"alsasink", "autoaudiosink", NULL};
+        const gchar *const *candidates = alsa_device ? candidates_alsa : candidates_pulse;
         sink = mp_make_first(candidates, "audiosink", &chosen);
     } else {
         sink = gst_element_factory_make(cfg->sink, "audiosink");
@@ -817,6 +922,9 @@ static GstElement* mp_audio_make_sink(const MpAudioConfig *cfg) {
         g_printerr("Audio sink '%s' is unavailable\n", cfg->sink);
         return NULL;
     }
+    if (cfg->sink_device) {
+        mp_set_string_prop(sink, "device", cfg->sink_device);
+    }
     mp_set_bool_prop(sink, "sync", TRUE);
     mp_set_number_prop(sink, "buffer-time", (gint64)cfg->sink_buffer_ms * 1000);
     mp_set_number_prop(sink, "latency-time",
@@ -824,7 +932,10 @@ static GstElement* mp_audio_make_sink(const MpAudioConfig *cfg) {
     mp_set_bool_prop(sink, "provide-clock", FALSE);
     gboolean relaxed = FALSE;
     mp_relax_sink_dropping(sink, &relaxed);
-    g_print("Audio playback: %s, device buffer %d ms\n", chosen, cfg->sink_buffer_ms);
+    g_print("Audio playback: %s%s%s, device buffer %d ms\n", chosen,
+            cfg->sink_device ? " device=" : "",
+            cfg->sink_device ? cfg->sink_device : "",
+            cfg->sink_buffer_ms);
     return sink;
 }
 
@@ -879,6 +990,53 @@ static gboolean mp_audio_build_recv(GstBin *bin, const MpAudioConfig *cfg,
         }
     }
     return TRUE;
+}
+
+// ---------------------------------------------------------------------------
+// First-packet base-time reset
+// ---------------------------------------------------------------------------
+//
+// When the audio-recv pipeline starts before the far end is sending, the
+// alsasink opens the device and immediately begins underrunning. By the time
+// packets actually arrive (seconds or minutes later), the sink's internal clock
+// state can be irrecoverably stale: every buffer looks "on time" to the
+// jitterbuffer but the ALSA ring-buffer position has drifted through countless
+// XRUNs, and audio never plays.
+//
+// Fix: a one-shot pad probe on udpsrc resets the pipeline's base_time when the
+// very first packet arrives. This makes the pipeline clock think it just
+// started, so the jitterbuffer's timestamp mapping and the sink's scheduling
+// both align with reality.
+
+typedef struct {
+    GstElement *pipeline;
+    gint fired;              // atomic guard: only the first buffer acts
+} MpAudioFirstPacket;
+
+static GstPadProbeReturn mp_audio_first_packet_probe(GstPad *pad,
+                                                      GstPadProbeInfo *info,
+                                                      gpointer user_data) {
+    (void)pad;
+    (void)info;
+    MpAudioFirstPacket *fp = (MpAudioFirstPacket *)user_data;
+    if (!g_atomic_int_compare_and_exchange(&fp->fired, 0, 1)) {
+        return GST_PAD_PROBE_REMOVE;
+    }
+
+    GstClock *clock = gst_element_get_clock(fp->pipeline);
+    if (clock) {
+        GstClockTime now = gst_clock_get_time(clock);
+        gst_element_set_base_time(fp->pipeline, now);
+        gst_object_unref(clock);
+        g_print("Audio recv: first packet arrived, base-time reset\n");
+    }
+
+    // The probe data is freed by the destroy-notify below.
+    return GST_PAD_PROBE_REMOVE;
+}
+
+static void mp_audio_first_packet_free(gpointer data) {
+    g_free(data);
 }
 
 // ---------------------------------------------------------------------------
@@ -1014,6 +1172,21 @@ static gboolean mp_audio_udp_recv_pipeline(MpWorker *worker, const MpAudioConfig
         g_printerr("Failed to link the audio jitterbuffer to the depayloader\n");
         gst_object_unref(pipeline);
         return FALSE;
+    }
+
+    // Reset the pipeline's base-time when the first packet arrives, so a long
+    // idle period between PLAYING and actual data does not leave the sink's
+    // clock synchronisation stale.
+    MpAudioFirstPacket *fp = g_new0(MpAudioFirstPacket, 1);
+    fp->pipeline = pipeline;
+    GstPad *first_pad = gst_element_get_static_pad(udpsrc, "src");
+    if (first_pad) {
+        gst_pad_add_probe(first_pad, GST_PAD_PROBE_TYPE_BUFFER,
+                           mp_audio_first_packet_probe, fp,
+                           mp_audio_first_packet_free);
+        gst_object_unref(first_pad);
+    } else {
+        g_free(fp);
     }
 
     mp_audio_stats_init(stats, "audio-recv", cfg, cfg->frame_ms);
