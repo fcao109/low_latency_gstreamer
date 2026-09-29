@@ -10,7 +10,7 @@
 #include "syncQueue.h"
 #include "videoPipelineApi.h"
 
-// #define FILE_TEST
+#define FILE_TEST
 // #define SERVER_LOCAL_RENDERING
 // #define SERVER_LOCAL_RENDERING_CV
 

@@ -17,6 +17,7 @@
 // exactly as before, and nothing blocks waiting for a channel.
 
 #include <gst/gst.h>
+#include <gst/app/gstappsink.h>
 #include <glib.h>
 #include <glib-unix.h>
 #include <glib/gprintf.h>
@@ -173,6 +174,32 @@ static gboolean src_pad_has_feature(GstElement *element, const gchar *feature) {
     return found;
 }
 
+static GstFlowReturn on_new_sample(GstAppSink *appsink, gpointer user_data) {
+    GstSample *sample = gst_app_sink_pull_sample(appsink);
+    if (!sample) {
+        return GST_FLOW_ERROR;
+    }
+
+    GstBuffer *buffer = gst_sample_get_buffer(sample);
+    GstCaps *caps = gst_sample_get_caps(sample);
+    GstStructure *structure = gst_caps_get_structure(caps, 0);
+
+    int width = 0, height = 0;
+    gst_structure_get_int(structure, "width", &width);
+    gst_structure_get_int(structure, "height", &height);
+    g_print("got sample: width %d , height %d\n", width, height);
+
+    GstMapInfo map;
+    if (gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+        g_print("got sample: data size %d bytes\n", map.size);
+        gst_buffer_unmap(buffer, &map);
+    }
+
+    gst_sample_unref(sample);
+
+    return GST_FLOW_OK;
+}
+
 static gboolean build_pipeline(ClientData *data) {
     // Create pipeline programmatically
     data->pipeline = gst_pipeline_new("video-receiving-pipeline");
@@ -207,17 +234,22 @@ static gboolean build_pipeline(ClientData *data) {
     GstElement *decodebin = NULL;
     GstElement *videoconvert = gst_element_factory_make("videoconvert", "videoconvert");
     GstElement *autovideosink = gst_element_factory_make("autovideosink", "autovideosink");
+    GstElement *appsink = gst_element_factory_make("appsink", "appsink");
 
-    if (!udpsrc || !capsfilter || !videoconvert || !autovideosink || !jitterbuffer) {
+    if (!udpsrc || !capsfilter || !videoconvert || !autovideosink || !jitterbuffer || !appsink) {
         g_printerr("Failed to create elements\n");
         return FALSE;
     }
+
+    g_object_set(appsink, "emit-signals", TRUE, "sync", TRUE, NULL);
+    g_signal_connect(appsink, "new-sample", G_CALLBACK(on_new_sample), nullptr);
 
     // Keep the buffer as short as the user asked for; it bounds added latency.
     g_object_set(jitterbuffer, "latency", (guint)data->latency, NULL);
     // Emit packet-lost events so the decoder is told about gaps instead of
     // silently decoding damaged references.
     set_bool_prop(jitterbuffer, "do-lost", TRUE);
+    set_bool_prop(jitterbuffer, "drop-on-latency", TRUE);   // feng
     // GStreamer's default mode slaves the receiver to an estimate of the sender's
     // clock and schedules every packet against it, which was measured holding
     // frames ~22 ms even with a 5 ms depth. "none" forwards as soon as possible so
@@ -363,11 +395,14 @@ static gboolean build_pipeline(ClientData *data) {
         chain[n++] = depay;
         chain[n++] = parse;
         chain[n++] = decoder;
+#if 0
         if (glcolorconvert) chain[n++] = glcolorconvert;
         if (gldownload)     chain[n++] = gldownload;
         if (cudadownload)   chain[n++] = cudadownload;
+#endif
         chain[n++] = videoconvert;
-        chain[n++] = autovideosink;
+        // chain[n++] = autovideosink;
+        chain[n++] = appsink;
 
         for (gint i = 0; i < n; i++) {
             gst_bin_add(GST_BIN(data->pipeline), chain[i]);
@@ -902,6 +937,18 @@ static void run_client(ClientData *data) {
     mp_srtp_key_clear(&data->srtp_audio_up);
 }
 
+static void mp_pki_enable(ClientData &data) {
+    if (!mp_pki_is_configured(data.pki)) {
+        if (g_file_test("../pki/ca.crt", G_FILE_TEST_IS_REGULAR) &&
+            g_file_test("../pki/receiver.crt", G_FILE_TEST_IS_REGULAR) &&
+            g_file_test("../pki/receiver.key", G_FILE_TEST_IS_REGULAR)) {
+            data.pki->ca_file = g_strdup("../pki/ca.crt");
+            data.pki->cert_file = g_strdup("../pki/receiver.crt");
+            data.pki->key_file = g_strdup("../pki/receiver.key");
+        }
+    }
+}
+
 static void print_usage(const gchar *program, FILE *stream) {
     g_fprintf(stream, "Usage: %s [options]\n", program);
     g_fprintf(stream, "\nReceives RTP/UDP video and exchanges audio both ways.\n\n");
@@ -946,12 +993,13 @@ int main(int argc, char *argv[]) {
     // See build_pipeline(): the adaptive modes add roughly a frame of scheduling
     // delay. Switch to "slave" or "buffer" on a link that actually needs smoothing.
     data.jitter_mode = g_strdup("none");
-    data.buffer_size = 524288;
+    data.buffer_size = 1048576;     // feng - old value 524288
     data.peer_host = g_strdup("127.0.0.1");
     data.audio_port = 5002;
     data.audio_back_port = 5004;
     data.key_port = 5010;
     data.pki = mp_pki_new();
+    data.hw_decode = TRUE;
     // 660 Hz against the sender's 440 Hz, so the two directions are audibly
     // distinct on one desk.
     mp_audio_config_defaults(&data.audio, 660);
@@ -992,6 +1040,8 @@ int main(int argc, char *argv[]) {
             data.audio_back_port = atoi(argv[++i]);
         } else if (g_strcmp0(argv[i], "--key-port") == 0 && i + 1 < argc) {
             data.key_port = atoi(argv[++i]);
+        } else if (g_strcmp0(argv[i], "--encrypt") == 0) {
+            mp_pki_enable(data);
         } else if (g_strcmp0(argv[i], "--help") == 0 || g_strcmp0(argv[i], "-h") == 0) {
             print_usage(argv[0], stdout);
             return 0;
