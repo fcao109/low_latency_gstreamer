@@ -62,3 +62,31 @@ cv::Mat reduceBitDepth(const cv::Mat& img, int bitDepth);
 unsigned char** allocate_images(int width, int height, int num_images, int capColorFormat);
 cv::Mat convertYUV420Frame(unsigned char* yuvData, int width, int height);
 void resizeYuv420(unsigned char* srcYuv, int srcWidth, int srcHeight, unsigned char* dstYuv, int dstWidth, int dstHeight);
+
+// ---------------------------------------------------------------------------
+// GPU-accelerated stitch/crop (video_src/gpu_stitch.cu).
+// All buffer pointers must be GPU-accessible (cudaMallocHost or cudaMalloc).
+// ---------------------------------------------------------------------------
+#ifdef USE_JETSON_ZEROCOPY
+#ifdef __cplusplus
+extern "C" {
+#endif
+void gpu_stitch_init();
+void gpu_stitch_cleanup();
+void gpu_stitch_vertical_yuv420(
+    const unsigned char* frame1, const unsigned char* frame2,
+    unsigned char* dst, int width, int height);
+void gpu_stitch_horizontal_yuv420(
+    const unsigned char* frame1, const unsigned char* frame2,
+    unsigned char* dst, int width, int height);
+void gpu_crop_yuv420(
+    const unsigned char* src, unsigned char* dst,
+    int srcWidth, int srcHeight,
+    int cropX, int cropY, int cropWidth, int cropHeight);
+unsigned char** gpu_allocate_pinned_images(
+    int width, int height, int num_images, int is_yuv420);
+void gpu_free_pinned_images(unsigned char** images, int num_images);
+#ifdef __cplusplus
+}
+#endif
+#endif

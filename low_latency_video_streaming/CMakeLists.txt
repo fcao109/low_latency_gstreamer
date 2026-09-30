@@ -4,6 +4,38 @@ project(GStreamerVideoStreaming)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ---------------------------------------------------------------------------
+# GPU zero-copy options. At most one should be ON.
+#
+#   USE_JETSON_ZEROCOPY  – Jetson (integrated GPU, unified memory). Capture
+#                          buffers are allocated with cudaMallocHost so the
+#                          encoder reads them without a PCIe upload.
+#
+#   USE_GPUDIRECT_RDMA   – Discrete GPU with GPUDirect RDMA. The Magewell
+#                          card DMAs directly into GPU VRAM via the
+#                          NvRdmaForProCapture kernel module.
+# ---------------------------------------------------------------------------
+option(USE_JETSON_ZEROCOPY "CUDA pinned memory for zero-copy on Jetson"  ON)
+option(USE_GPUDIRECT_RDMA  "GPUDirect RDMA for discrete GPUs"           OFF)
+
+if(USE_JETSON_ZEROCOPY OR USE_GPUDIRECT_RDMA)
+    find_package(CUDA REQUIRED)
+    include_directories(${CUDA_INCLUDE_DIRS})
+    if(USE_JETSON_ZEROCOPY)
+        add_definitions(-DUSE_JETSON_ZEROCOPY)
+        message(STATUS "Jetson zero-copy enabled (cudaMallocHost capture buffers, GPU stitch/crop)")
+    endif()
+    if(USE_GPUDIRECT_RDMA)
+        add_definitions(-DUSE_GPUDIRECT_RDMA)
+        message(STATUS "GPUDirect RDMA enabled (capture to GPU physical address)")
+    endif()
+    # GPU stitch/crop kernels — compiled as a static library that links
+    # into the server.  CUDA_ADD_LIBRARY handles .cu → nvcc compilation.
+    cuda_add_library(gpu_stitch STATIC
+        ${CMAKE_SOURCE_DIR}/video_src/gpu_stitch.cu
+    )
+endif()
+
 # Find required packages
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0>=1.16 gstreamer-app-1.0)
@@ -55,6 +87,9 @@ target_link_libraries(server
     ${OpenCV_LIBRARIES}
     pthread udev asound v4l2
 )
+if(USE_JETSON_ZEROCOPY OR USE_GPUDIRECT_RDMA)
+    target_link_libraries(server gpu_stitch ${CUDA_LIBRARIES} ${CUDA_CUDART_LIBRARY})
+endif()
 
 # Client executable
 add_executable(client client.cpp)

@@ -30,11 +30,17 @@ void VideoPipeline::runCaptureLeft() {
 
     //cv::Mat frame;
     unsigned char* frame;
+#if defined(USE_JETSON_ZEROCOPY) || defined(USE_GPUDIRECT_RDMA)
+    // Zero-copy: no separate buffer needed — readDirect() returns the
+    // internal (pinned or GPU) buffer pointer.
+    frame = nullptr;
+#else
     if (params.capColorFormat == MWCAP_VIDEO_COLOR_FORMAT_YUV2020) {
         frame = (unsigned char*)malloc(params.captureWidth * params.captureHeight * 3 / 2);
     } else if (params.capColorFormat == MWCAP_VIDEO_COLOR_FORMAT_RGB) {
         frame = (unsigned char*)malloc(params.captureWidth * params.captureHeight * 3);
     }
+#endif
 
     int emptyCnt = 0;
 
@@ -45,7 +51,11 @@ void VideoPipeline::runCaptureLeft() {
     std::cout << "Enter capture left camera loop..." << ",threadid=" << std::this_thread::get_id() << std::endl;
 
     while (captureRunning && g_atomic_int_get(&(((ServerData *)serverData)->running))) {
+#if defined(USE_JETSON_ZEROCOPY) || defined(USE_GPUDIRECT_RDMA)
+        frame = cap->readDirect();
+#else
         cap->read(frame);
+#endif
 
         // if (frame.empty()) {
         if (frame == nullptr) {
@@ -75,11 +85,15 @@ void VideoPipeline::runCaptureRight() {
 
     // cv::Mat frame;
     unsigned char* frame;
+#if defined(USE_JETSON_ZEROCOPY) || defined(USE_GPUDIRECT_RDMA)
+    frame = nullptr;
+#else
     if (params.capColorFormat == MWCAP_VIDEO_COLOR_FORMAT_YUV2020) {
         frame = (unsigned char*)malloc(params.captureWidth * params.captureHeight * 3 / 2);
     } else if (params.capColorFormat == MWCAP_VIDEO_COLOR_FORMAT_RGB) {
         frame = (unsigned char*)malloc(params.captureWidth * params.captureHeight * 3);
     }
+#endif
 
     int emptyCnt = 0;
 
@@ -90,7 +104,11 @@ void VideoPipeline::runCaptureRight() {
     std::cout << "Enter capture right camera loop..." << ",threadid=" << std::this_thread::get_id() << std::endl;
 
     while (captureRunning && g_atomic_int_get(&(((ServerData *)serverData)->running))) {
+#if defined(USE_JETSON_ZEROCOPY) || defined(USE_GPUDIRECT_RDMA)
+        frame = cap->readDirect();
+#else
         cap->read(frame);
+#endif
 
         // if (frame.empty()) {
         if (frame == nullptr) {
@@ -212,11 +230,23 @@ void VideoPipeline::runSrc() {
     // cv::Mat images[numImageBuffer];
     unsigned char** images;
 
-    // pre-allocated image buffers
+    // pre-allocated image buffers.  On the zero-copy path these are pinned
+    // (cudaMallocHost) so the GPU encoder can read from them without a PCIe
+    // upload, and the GPU stitch/crop kernels can write to them directly.
+#ifdef USE_JETSON_ZEROCOPY
+    int is_yuv = (params.capColorFormat == MWCAP_VIDEO_COLOR_FORMAT_YUV2020) ? 1 : 0;
+#if horizontal3D
+    images = gpu_allocate_pinned_images(params.captureWidth * 2, params.captureHeight, numImageBuffer, is_yuv);
+#else
+    images = gpu_allocate_pinned_images(params.captureWidth, params.captureHeight * 2, numImageBuffer, is_yuv);
+#endif
+    gpu_stitch_init();
+#else
 #if horizontal3D
     images = allocate_images(params.captureWidth * 2, params.captureHeight, numImageBuffer, params.capColorFormat);
 #else
     images = allocate_images(params.captureWidth, params.captureHeight * 2, numImageBuffer, params.capColorFormat);
+#endif
 #endif
 
     int emptyCnt = 0;
@@ -241,7 +271,11 @@ void VideoPipeline::runSrc() {
     unsigned char** crop_images;
     unsigned char* crop_canvas;
     if (params.enable_crop) {
+#ifdef USE_JETSON_ZEROCOPY
+        crop_images = gpu_allocate_pinned_images(params.cropWidth, params.cropHeight, numImageBuffer, is_yuv);
+#else
         crop_images = allocate_images(params.cropWidth, params.cropHeight, numImageBuffer, params.capColorFormat);
+#endif
     }
 
     while (!g_atomic_int_get(&(((ServerData *)serverData)->running))) {
@@ -267,14 +301,42 @@ void VideoPipeline::runSrc() {
         canvas = images[frameCnt % numImageBuffer];
 
 #ifdef COMBO_IMAGES
+#ifdef USE_JETSON_ZEROCOPY
+        // GPU stitch: source buffers (frame1, frame2) are cudaMallocHost'd
+        // from readDirect(); destination (canvas) is also pinned.
+        if (params.capColorFormat == MWCAP_VIDEO_COLOR_FORMAT_YUV2020) {
+#if horizontal3D
+            gpu_stitch_horizontal_yuv420(frame1, frame2, canvas,
+                                         params.captureWidth, params.captureHeight);
+#else
+            gpu_stitch_vertical_yuv420(frame1, frame2, canvas,
+                                       params.captureWidth, params.captureHeight);
+#endif
+        } else {
+            // RGB fallback: GPU stitch not implemented for RGB, use CPU.
+            stitchFrames(frame1, frame2, params.captureWidth, params.captureHeight, canvas, params.capColorFormat);
+        }
+#else
         stitchFrames(frame1, frame2, params.captureWidth, params.captureHeight, canvas, params.capColorFormat);
+#endif
 #else
         memcpy(canvas, frame1, params.captureWidth * params.captureHeight * 3 / 2);
 #endif
 
         if (params.enable_crop) {
             crop_canvas = crop_images[frameCnt % numImageBuffer];
+#ifdef USE_JETSON_ZEROCOPY
+            if (params.capColorFormat == MWCAP_VIDEO_COLOR_FORMAT_YUV2020) {
+                gpu_crop_yuv420(canvas, crop_canvas,
+                                params.captureWidth, params.captureHeight * 2,
+                                params.cropX, params.cropY,
+                                params.cropWidth, params.cropHeight);
+            } else {
+                cropFrames(canvas, params.captureWidth, params.captureHeight * 2, params.cropX, params.cropY, params.cropWidth, params.cropHeight, crop_canvas);
+            }
+#else
             cropFrames(canvas, params.captureWidth, params.captureHeight * 2, params.cropX, params.cropY, params.cropWidth, params.cropHeight, crop_canvas);
+#endif
             canvas = crop_canvas;
             //resizeYuv420(crop_canvas, params.cropWidth, params.cropHeight, canvas, params.captureWidth, params.captureHeight * 2);
         }
@@ -378,6 +440,10 @@ void VideoPipeline::stop() {
     bufferQueue = nullptr;
     capQueueLeft = nullptr;
     capQueueRight = nullptr;
+
+#ifdef USE_JETSON_ZEROCOPY
+    gpu_stitch_cleanup();
+#endif
 }
 
 void VideoPipeline::reload() {

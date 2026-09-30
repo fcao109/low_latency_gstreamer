@@ -416,8 +416,16 @@ static gpointer pacer_thread_func(gpointer user_data) {
             continue;
             #endif
 
-            // Wrap the mapped pages directly instead of copying ~3 MB per frame. The
-            // mapping outlives the pipeline, so no free function is needed.
+            // Wrap the frame data as a GstBuffer.  On the Jetson zero-copy path
+            // rawbuff points to cudaMallocHost'd memory that the GPU can access
+            // directly (unified memory), so gst_buffer_new_wrapped_full works
+            // as-is — no upload needed.
+            //
+            // On the GPUDirect RDMA path (discrete GPU) the data lives in GPU
+            // VRAM.  The encoder (nvh265enc) needs a CUDA-backed GstBuffer.
+            // For now we wrap the CPU-side fallback; a full GstCudaMemory
+            // integration would require gstreamer-cuda headers and is left as
+            // a future enhancement once NvRdmaForProCapture is validated.
             GstBuffer *buf = gst_buffer_new_wrapped_full(
                 GST_MEMORY_FLAG_READONLY, rawbuff,
                 data->frame_size, 0, data->frame_size, NULL, NULL);
@@ -956,7 +964,7 @@ static void run_server(ServerData *data) {
 
     mp_worker_set_pipeline(data->video_worker, data->pipeline, on_video_bus, data);
     data->last_report_us = g_get_monotonic_time();
-    mp_worker_add_timeout(data->video_worker, 1000, report_budget, data);
+    mp_worker_add_timeout(data->video_worker, 10000, report_budget, data);
 
     if (audio_send &&
         !mp_audio_udp_send_pipeline(data->audio_tx_worker, &data->audio, data->host,
@@ -1084,8 +1092,8 @@ int main(int argc, char *argv[]) {
 
     // Initialize defaults
     data.codec = g_strdup("h265");
-    data.host = g_strdup("127.0.0.1");
-    // data.host = g_strdup("10.50.0.189");
+    // data.host = g_strdup("127.0.0.1");
+    data.host = g_strdup("10.50.0.167");
     data.port = 9601;
     data.width = 1280;
     data.height = 1024;
