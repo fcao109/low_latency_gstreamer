@@ -402,7 +402,6 @@ static gpointer pacer_thread_func(gpointer user_data) {
 
     while (g_atomic_int_get(&data->running)) {
         if (data->capture_frame_cnt != frame_index) {
-            // printf("%s %d: %ld %ld\n",__func__,__LINE__, data->capture_frame_cnt, frame_index);
             unsigned char* rawbuff = data->frameQueue->pop();
 
             #ifdef SERVER_LOCAL_RENDERING_CV    // dbg only, need to use while loop instead of g_main_loop_run
@@ -543,236 +542,6 @@ static gboolean report_budget(gpointer user_data) {
     return G_SOURCE_CONTINUE;
 }
 
-#if 0
-static gboolean build_pipeline(ServerData *data) {
-    const gchar *gpu_encoder = detect_gpu_encoder(data);
-
-    // Create encoder first before any other elements to avoid plugin state issues
-    GstElement *encoder = NULL;
-    GstElement *rtp_pay = NULL;
-    GstElement *udpsink = NULL;
-
-    gboolean using_gpu_encoder = FALSE;
-
-    if (gpu_encoder) {
-        g_print("Attempting to create GPU encoder: %s\n", gpu_encoder);
-        encoder = gst_element_factory_make(gpu_encoder, "encoder");
-
-        if (!encoder) {
-            g_printerr("Could not instantiate %s (plugin present but element "
-                       "creation failed - check driver libraries)\n", gpu_encoder);
-        } else if (g_str_has_prefix(gpu_encoder, "nv")) {
-            configure_nvenc_low_latency(encoder, data);
-            using_gpu_encoder = TRUE;
-        } else {
-            // VAAPI expresses bitrate in kbit/sec as well.
-            set_number_prop(encoder, "bitrate", data->bitrate / 1000);
-            set_number_prop(encoder, "keyframe-period", data->framerate);
-            g_print("Configured VAAPI encoder: %s\n", gpu_encoder);
-            using_gpu_encoder = TRUE;
-        }
-    }
-
-    if (!encoder) {
-        g_print("Falling back to CPU encoding\n");
-        encoder = create_cpu_encoder(data);
-    }
-
-    if (!encoder) {
-        g_printerr("Failed to create any encoder\n");
-        return FALSE;
-    }
-
-    data->using_gpu_encoder = using_gpu_encoder;
-
-    // Create pipeline programmatically to handle tee element
-    data->pipeline = gst_pipeline_new("video-streaming-pipeline");
-    if (!data->pipeline) {
-        g_printerr("Failed to create pipeline\n");
-        return FALSE;
-    }
-
-    GstClock *clock = gst_system_clock_obtain();
-    g_object_set(clock,
-                "clock-type", GST_CLOCK_TYPE_MONOTONIC,
-                NULL);
-    gst_pipeline_use_clock(GST_PIPELINE_CAST(data->pipeline), clock);
-    gst_object_unref(clock);
-
-    // Create remaining elements. Frames are injected by the pacing loop rather
-    // than pulled from disk, so the source is appsrc.
-#ifdef FILE_TEST
-    GstElement *appsrc = gst_element_factory_make("appsrc", "appsrc");
-#else
-#if 1
-    // use buffer from video_src
-    GstElement *appsrc = gst_element_factory_make("appsrc", "appsrc");
-#else
-    // original frames
-    GstElement *appsrc = gst_element_factory_make("v4l2src", "appsrc");
-    g_object_set(appsrc, "device", "/dev/video0", NULL);
-#endif
-#endif
-    // The loop already pushes I420, which both NVENC and the preview sink accept,
-    // so this normally negotiates to passthrough and costs nothing. It stays as a
-    // safety net for sinks that cannot take I420 directly.
-    GstElement *videoconvert = gst_element_factory_make("videoconvert", "videoconvert");
-    GstElement *tee = gst_element_factory_make("tee", "tee");
-    GstElement *queue_display = gst_element_factory_make("queue", "queue_display");
-    GstElement *autovideosink = gst_element_factory_make("autovideosink", "autovideosink");
-    GstElement *queue_encode = gst_element_factory_make("queue", "queue_encode");
-    GstElement *fakesink = gst_element_factory_make ("fakesink", "fakesink");
-
-    if (!appsrc || !videoconvert || !tee || !queue_display ||
-        !autovideosink || !queue_encode || !fakesink) {
-        g_printerr("Failed to create elements\n");
-        return FALSE;
-    }
-    data->appsrc = appsrc;
-
-    // Describe exactly what the pacing loop will push. The loop stamps every
-    // buffer itself, so do-timestamp stays off.
-    GstCaps *src_caps = gst_caps_new_simple(
-        "video/x-raw",
-        "format", G_TYPE_STRING, "I420",
-        "width", G_TYPE_INT, data->width,
-        "height", G_TYPE_INT, data->height,
-        "framerate", GST_TYPE_FRACTION, data->framerate, 1,
-        NULL);
-    g_object_set(appsrc,
-                 "caps", src_caps,
-                 "format", GST_FORMAT_TIME,
-                 "is-live", TRUE,
-                 "do-timestamp", FALSE,
-                 // Block instead of silently dropping when downstream is behind,
-                 // so a slow encoder shows up as a measured budget overrun.
-                 "block", TRUE,
-                 "max-bytes", (guint64)(2 * data->frame_size),
-                 NULL);
-    gst_caps_unref(src_caps);
-
-    // Configure queues for low latency
-    g_object_set(queue_display, "max-size-buffers", 1, "max-size-time", 0, "max-size-bytes", 0, NULL);
-    g_object_set(queue_encode, "max-size-buffers", 1, "max-size-time", 0, "max-size-bytes", 0, NULL);
-
-    // Drop stale preview frames rather than back-pressuring the tee. Pacing no
-    // longer depends on the preview, so a slow local display can no longer
-    // throttle the outgoing stream.
-    const gchar *const leak_downstream[] = {"downstream", NULL};
-    set_enum_prop(queue_display, "leaky", leak_downstream);
-
-    // Show each frame as soon as it arrives. The pacing loop already released it
-    // at the right moment, so waiting on the clock again here would put the
-    // preview one or two frames behind what has already gone out on the wire -
-    // exactly the skew that makes a side-by-side latency photo read too low.
-    set_bool_prop(autovideosink, "sync", FALSE);
-
-    // Create RTP payload element
-    if (g_strcmp0(data->codec, "h264") == 0) {
-        rtp_pay = gst_element_factory_make("rtph264pay", "rtp_pay");
-    } else {
-        rtp_pay = gst_element_factory_make("rtph265pay", "rtp_pay");
-    }
-
-    if (!rtp_pay) {
-        g_printerr("Failed to create RTP payload element\n");
-        return FALSE;
-    }
-    g_object_set(rtp_pay, "pt", 96, NULL);
-    // Resend codec configuration (SPS/PPS) with every IDR frame. The default of
-    // 0 sends it only once at startup, which leaves any receiver that attaches
-    // later unable to initialise its decoder - it would never show a picture.
-    set_number_prop(rtp_pay, "config-interval", -1);
-    // Emit each NAL as soon as it is produced rather than aggregating them.
-    // Only present on newer releases, where it is an enum rather than a boolean.
-    const gchar *const aggregate[] = {"zero-latency", "none", NULL};
-    set_enum_prop(rtp_pay, "aggregate-mode", aggregate);
-
-    // Create UDP sink
-    udpsink = gst_element_factory_make("udpsink", "udpsink");
-    if (!udpsink) {
-        g_printerr("Failed to create UDP sink\n");
-        return FALSE;
-    }
-    g_object_set(udpsink, "host", data->host, "port", data->port, "sync", FALSE, "max-lateness", 0, NULL);
-
-    // Add all elements to pipeline
-    gst_bin_add_many(GST_BIN(data->pipeline), appsrc, videoconvert, tee,
-                     queue_display,
-#ifdef SERVER_LOCAL_RENDERING
-                     autovideosink,
-#else
-                     fakesink,
-#endif
-                     queue_encode, encoder, rtp_pay, udpsink, NULL);
-
-    // Link elements - source to tee
-    if (!gst_element_link_many(appsrc, videoconvert, tee, NULL)) {
-        g_printerr("Failed to link source elements\n");
-        return FALSE;
-    }
-
-    // Link tee to display branch
-    GstPad *tee_src_display = gst_element_request_pad_simple(tee, "src_%u");
-    GstPad *queue_display_sink = gst_element_get_static_pad(queue_display, "sink");
-    if (gst_pad_link(tee_src_display, queue_display_sink) != GST_PAD_LINK_OK) {
-        g_printerr("Failed to link tee to display queue\n");
-        return FALSE;
-    }
-    gst_object_unref(tee_src_display);
-    gst_object_unref(queue_display_sink);
-
-#ifdef SERVER_LOCAL_RENDERING
-    if (!gst_element_link(queue_display, autovideosink)) {
-#else
-    if (!gst_element_link(queue_display, fakesink)) {
-#endif
-        g_printerr("Failed to link display queue to videosink\n");
-        return FALSE;
-    }
-
-    // Link tee to encode branch
-    GstPad *tee_src_encode = gst_element_request_pad_simple(tee, "src_%u");
-    GstPad *queue_encode_sink = gst_element_get_static_pad(queue_encode, "sink");
-    if (gst_pad_link(tee_src_encode, queue_encode_sink) != GST_PAD_LINK_OK) {
-        g_printerr("Failed to link tee to encode queue\n");
-        return FALSE;
-    }
-    gst_object_unref(tee_src_encode);
-    gst_object_unref(queue_encode_sink);
-
-    if (!gst_element_link_many(queue_encode, encoder, rtp_pay, NULL)) {
-        g_printerr("Failed to link encode elements\n");
-        return FALSE;
-    }
-
-    // Encryption goes between the payloader and the socket, so the budget probe
-    // on the udpsink still measures everything that happens to a frame before it
-    // leaves the process. SRTP leaves the RTP header in the clear, so the
-    // receiver can still read timestamps for its own measurements.
-    if (data->srtp_video.enabled) {
-        GstPad *src = mp_srtp_insert_sender(GST_BIN(data->pipeline), &data->srtp_video,
-                                           rtp_pay, "videosrtpenc");
-        GstPad *sink = gst_element_get_static_pad(udpsink, "sink");
-        if (!src || !sink || gst_pad_link(src, sink) != GST_PAD_LINK_OK) {
-            g_printerr("Failed to link srtpenc to the video udpsink\n");
-            if (src) gst_object_unref(src);
-            if (sink) gst_object_unref(sink);
-            return FALSE;
-        }
-        gst_object_unref(src);
-        gst_object_unref(sink);
-    } else if (!gst_element_link(rtp_pay, udpsink)) {
-        g_printerr("Failed to link the payloader to the udpsink\n");
-        return FALSE;
-    }
-
-    g_print("Pipeline built with display and streaming branches (%s encoding)\n",
-            data->using_gpu_encoder ? "GPU" : "CPU");
-
-    return TRUE;
-}
-#else   // feng
 static gboolean build_pipeline_orin(ServerData *data) {
     const gchar *gpu_encoder = detect_gpu_encoder(data);
 
@@ -839,14 +608,7 @@ static gboolean build_pipeline_orin(ServerData *data) {
 #ifdef FILE_TEST
     GstElement *appsrc = gst_element_factory_make("appsrc", "appsrc");
 #else
-#if 1
-    // use buffer from video_src
     GstElement *appsrc = gst_element_factory_make("appsrc", "appsrc");
-#else
-    // original frames
-    GstElement *appsrc = gst_element_factory_make("v4l2src", "appsrc");
-    g_object_set(appsrc, "device", "/dev/video0", NULL);
-#endif
 #endif
     // The loop already pushes I420, which both NVENC and the preview sink accept,
     // so this normally negotiates to passthrough and costs nothing. It stays as a
@@ -873,8 +635,6 @@ static gboolean build_pipeline_orin(ServerData *data) {
         return FALSE;
     }
     data->appsrc = appsrc;
-
-    printf("%s %d: Resolution: %dx%d\n",__func__,__LINE__, data->width, data->height);
 
     // Describe exactly what the pacing loop will push. The loop stamps every
     // buffer itself, so do-timestamp stays off.
@@ -951,20 +711,7 @@ static gboolean build_pipeline_orin(ServerData *data) {
     }
     g_object_set(udpsink, "host", data->host, "port", data->port, "sync", FALSE, "max-lateness", 0, NULL);
 
-#if 0
-    // Add all elements to pipeline
-    gst_bin_add_many(GST_BIN(data->pipeline), appsrc, videoconvert, tee, nvvidconv,
-                     queue_display,
-#ifdef SERVER_LOCAL_RENDERING
-                     autovideosink,
-#else
-                     fakesink,
-#endif
-                     queue_encode, encoder, rtp_pay, udpsink, NULL);
-#else
-    // gst_bin_add_many(GST_BIN(data->pipeline), appsrc, nvvidconv, encoder, parse, rtp_pay, udpsink, NULL);
     gst_bin_add_many(GST_BIN(data->pipeline), appsrc, nvvidconv, encoder, rtp_pay, udpsink, NULL);
-#endif
 
     // Link elements - source to tee
     // if (!gst_element_link_many(appsrc, nvvidconv, encoder, parse, rtp_pay, udpsink, NULL)) {
@@ -973,69 +720,11 @@ static gboolean build_pipeline_orin(ServerData *data) {
         return FALSE;
     }
 
-#if 0
-    // Link tee to display branch
-    GstPad *tee_src_display = gst_element_request_pad_simple(tee, "src_%u");
-    GstPad *queue_display_sink = gst_element_get_static_pad(queue_display, "sink");
-    if (gst_pad_link(tee_src_display, queue_display_sink) != GST_PAD_LINK_OK) {
-        g_printerr("Failed to link tee to display queue\n");
-        return FALSE;
-    }
-    gst_object_unref(tee_src_display);
-    gst_object_unref(queue_display_sink);
-
-#ifdef SERVER_LOCAL_RENDERING
-    if (!gst_element_link(queue_display, autovideosink)) {
-#else
-    if (!gst_element_link(queue_display, fakesink)) {
-#endif
-        g_printerr("Failed to link display queue to videosink\n");
-        return FALSE;
-    }
-
-    // Link tee to encode branch
-    GstPad *tee_src_encode = gst_element_request_pad_simple(tee, "src_%u");
-    GstPad *queue_encode_sink = gst_element_get_static_pad(queue_encode, "sink");
-    if (gst_pad_link(tee_src_encode, queue_encode_sink) != GST_PAD_LINK_OK) {
-        g_printerr("Failed to link tee to encode queue\n");
-        return FALSE;
-    }
-    gst_object_unref(tee_src_encode);
-    gst_object_unref(queue_encode_sink);
-
-    if (!gst_element_link_many(queue_encode, encoder, rtp_pay, NULL)) {
-        g_printerr("Failed to link encode elements\n");
-        return FALSE;
-    }
-
-    // Encryption goes between the payloader and the socket, so the budget probe
-    // on the udpsink still measures everything that happens to a frame before it
-    // leaves the process. SRTP leaves the RTP header in the clear, so the
-    // receiver can still read timestamps for its own measurements.
-    if (data->srtp_video.enabled) {
-        GstPad *src = mp_srtp_insert_sender(GST_BIN(data->pipeline), &data->srtp_video,
-                                           rtp_pay, "videosrtpenc");
-        GstPad *sink = gst_element_get_static_pad(udpsink, "sink");
-        if (!src || !sink || gst_pad_link(src, sink) != GST_PAD_LINK_OK) {
-            g_printerr("Failed to link srtpenc to the video udpsink\n");
-            if (src) gst_object_unref(src);
-            if (sink) gst_object_unref(sink);
-            return FALSE;
-        }
-        gst_object_unref(src);
-        gst_object_unref(sink);
-    } else if (!gst_element_link(rtp_pay, udpsink)) {
-        g_printerr("Failed to link the payloader to the udpsink\n");
-        return FALSE;
-    }
-#endif
-
     g_print("Pipeline built with display and streaming branches (%s encoding)\n",
             data->using_gpu_encoder ? "GPU" : "CPU");
 
     return TRUE;
 }
-#endif
 
 static gboolean on_video_bus(MpWorker *worker, GstMessage *message, gpointer user_data) {
     (void)worker; (void)user_data;
@@ -1149,9 +838,7 @@ static void run_server(ServerData *data) {
     gboolean audio_send = (data->audio.codec != MP_AUDIO_OFF && data->audio.send &&
                            g_strcmp0(data->audio.source, "none") != 0);
     gboolean audio_recv = (data->audio.codec != MP_AUDIO_OFF && data->audio.receive);
-#if 1   // feng
     audio_send = audio_recv = false;
-#endif
 
     mp_srtp_key_init(&data->srtp_video, "video", encrypt);
     mp_srtp_key_init(&data->srtp_audio_down, "audio-down", encrypt);
@@ -1166,7 +853,6 @@ static void run_server(ServerData *data) {
 #endif
 
     data->frame_size = (gsize)data->width * data->height * 3 / 2;  // I420
-    // printf("%s %d: Resolution: %dx%d\n",__func__,__LINE__, data->width, data->height);  // feng
 
     data->video_worker = mp_worker_new("video");
     data->video_worker->on_failure = on_worker_failure;
@@ -1195,21 +881,6 @@ static void run_server(ServerData *data) {
         return;
     }
 
-#if 0   // feng
-    // only h264 works
-    // Time each frame from the pacing loop to the moment its last RTP packet is
-    // handed to the socket, so the per-frame budget can be checked.
-    GstElement *udpsink = gst_bin_get_by_name(GST_BIN(data->pipeline), "udpsink");
-    if (udpsink) {
-        GstPad *sink_pad = gst_element_get_static_pad(udpsink, "sink");
-        if (sink_pad) {
-            gst_pad_add_probe(sink_pad, GST_PAD_PROBE_TYPE_BUFFER, budget_probe, data, NULL);
-            gst_object_unref(sink_pad);
-        }
-        gst_object_unref(udpsink);
-    }
-#else
-    // h264 + h265
     gulong probe_id = 0;
     GstElement *probe = gst_bin_get_by_name(GST_BIN(data->pipeline), "encoder");
     if (probe) {
@@ -1220,7 +891,6 @@ static void run_server(ServerData *data) {
         }
         gst_object_unref(probe);
     }
-#endif
 
     mp_worker_set_pipeline(data->video_worker, data->pipeline, on_video_bus, data);
     data->last_report_us = g_get_monotonic_time();
@@ -1276,7 +946,6 @@ static void run_server(ServerData *data) {
 
     g_unix_signal_add(SIGINT, on_interrupt, data);
     g_main_loop_run(data->supervisor);
-    // while (1) { sleep(1); }  // feng
 
     // Cleanup: stop the pacing loop before tearing the pipeline down so it cannot
     // push into elements that are already gone.

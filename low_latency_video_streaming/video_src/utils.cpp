@@ -243,8 +243,6 @@ unsigned char** allocate_images(int width, int height, int num_images, int capCo
 
 // Function to convert YUV420 to BGR and display using OpenCV
 cv::Mat convertYUV420Frame(unsigned char* yuvData, int width, int height) {
-    // printf("%s %d: width=%d, height=%d\n",__func__,__LINE__, width, height);
-
     // Create a cv::Mat for the Y channel
     cv::Mat yMat(height, width, CV_8UC1, yuvData);
 

@@ -173,7 +173,7 @@ static gboolean src_pad_has_feature(GstElement *element, const gchar *feature) {
     return found;
 }
 
-#if 1
+#if 0
 static gboolean build_pipeline(ClientData *data) {
     // Create pipeline programmatically
     data->pipeline = gst_pipeline_new("video-receiving-pipeline");
@@ -373,7 +373,6 @@ static gboolean build_pipeline(ClientData *data) {
 
     // Add all elements to pipeline
     if (decoder) {
-        g_printerr("~~~~~~~~%d\n", __LINE__);
         // Assemble the chain in order, skipping the optional stages that this
         // GStreamer version does not need, then add and link it in one pass.
         // srtpdec is left out of this list: its pads are named rtp_sink/rtp_src
@@ -421,7 +420,6 @@ static gboolean build_pipeline(ClientData *data) {
     }
 
     if (!decoder) {
-        g_printerr("~~~~~~~~%d\n", __LINE__);
         if (srtpdec) {
             if (!gst_element_link(udpsrc, capsfilter) ||
                 !gst_element_link_pads(capsfilter, "src", srtpdec, "rtp_sink") ||
@@ -923,8 +921,8 @@ static void run_client(ClientData *data) {
         return;
     }
 
-    // if (!build_pipeline_orin(data)) {
-    if (!build_pipeline(data)) {
+    if (!build_pipeline_orin(data)) {
+    // if (!build_pipeline(data)) {
         return;
     }
 
